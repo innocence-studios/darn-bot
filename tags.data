@@ -1,0 +1,4 @@
+{
+  "default": [ "i", "hate", "{guild:owner}" ],
+  "user": [ "i", "am", "{user:mention}" ]
+}
