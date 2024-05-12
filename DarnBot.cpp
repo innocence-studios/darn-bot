@@ -6,11 +6,20 @@
 #include <json.hpp>
 #include <map>
 #include <random>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#define RED     "\033[31m"
+#define GREEN   "\033[32m"
+#define YELLOW  "\033[33m"
+#define BLUE    "\033[34m"
+#define MAGENTA "\033[35m"
+#define CYAN    "\033[36m"
+#define WHITE   "\033[37m"
 
 using namespace std;
 
@@ -21,17 +30,46 @@ dpp::embed embed = dpp::embed()
     .set_footer("Owned by Innocence Studios", "https://avatars.githubusercontent.com/u/153023970?v=4")
     .set_timestamp(time(0));
 
+static void log(string content, string color = WHITE, bool endLine = true) {
+    cout << color << content << "\033[0m";
+    if (endLine) cout << endl;
+};
+
+static string readFile(string path) {
+    ifstream file(path);
+    string out((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
+    file.close();
+    return out;
+};
+
+static vector<string> extractURLs(string str) {
+    vector<string> URLList;
+
+    string regex_str = "\\b((?:https?|ftp|file):"
+        "\\/\\/[a-zA-Z0-9+&@#\\/%?=~_|!:,.;]*"
+        "[a-zA-Z0-9+&@#\\/%=~_|])";
+
+    regex r(regex_str, regex_constants::icase);
+
+    sregex_iterator m(str.begin(), str.end(), r);
+    sregex_iterator m_end;
+
+    while (m != m_end) {
+        URLList.push_back(m->str());
+        m++;
+    }
+
+    return URLList;
+};
 
 class TagManager {
 public:
     map<string, vector<string>> data;
     map<string, vector<string>> parse() {
-        ifstream tagFile("tags.data");
-        string content((istreambuf_iterator<char>(tagFile)), istreambuf_iterator<char>());
+        string content = readFile("tags.data");
         content.erase(remove_if(content.begin(), content.end(), [](char c) { return isspace(c) && c != ' '; }), content.end());
         size_t start = 0;
         parseJSON(content, start);
-        tagFile.close();
         return data;
     };
 
@@ -56,10 +94,16 @@ public:
         tagFile.close();
     };
 
-    string log() {
+    bool addTag(string name, vector<string> args) {
+        data[name] = args;
+        writeTags();
+        return data.contains(name);
+    };
+
+    string log(string indent = "") {
         string out;
         for (const auto& pair : data) {
-            out += pair.first + ": ";
+            out += indent + pair.first + ": ";
             for (const string& value : pair.second) {
                 out += value + " ";
             }
@@ -111,8 +155,6 @@ private:
         };
     };
 };
-
-
 
 static int rand(int min = 0, int max = RAND_MAX) {
     random_device rd;
@@ -183,7 +225,6 @@ static string command_tag_sum(dpp::message_create_t event, string range) {
     return to_string(out);
 };
 static string command_tag_user(dpp::message_create_t event, string what) {
-    cout << what << endl;
     if (what == "username") return event.msg.author.username;
     if (what == "name") return event.msg.author.global_name;
     if (what == "mention") return "<@" + to_string(event.msg.author.id) + ">";
@@ -231,7 +272,7 @@ static string command_tag_format(vector<string> args, dpp::message_create_t even
 
     return out;
 };
-static dpp::message command_tag(dpp::message_create_t event, vector<string> args, map<string, vector<string>>& tags_) {
+static dpp::message command_tag(dpp::message_create_t event, vector<string> args, TagManager& manager) {
     map<string, function<string(dpp::message_create_t, string)>> tags = {
         { "user", command_tag_user },
         { "date", command_tag_date },
@@ -250,27 +291,40 @@ static dpp::message command_tag(dpp::message_create_t event, vector<string> args
     }
     else tagName = "";
     if (action == "create") {
-        tags_[tagName] = args;
         dpp::embed embed_ = embed
+            .set_title("Tag " + tagName + " already exists")
+            .set_description("To edit this tag, use `" + PREFIX + "tag edit " + tagName + "`");
+        if (manager.data.contains(tagName)) return dpp::message(event.msg.channel_id, embed_);
+
+        manager.addTag(tagName, args);
+        embed_
             .set_title("Tag " + tagName + " created")
-            .set_description("`" + joinVector(tags_[tagName], ' ') + "`")
+            .set_description("`" + joinVector(manager.data[tagName], ' ') + "`")
+            .add_field("Expected output", command_tag_format(args, event, tags));
+        return dpp::message(event.msg.channel_id, embed_);
+    };
+    if (action == "edit") {
+        manager.addTag(tagName, args);
+        dpp::embed embed_ = embed
+            .set_title("Tag " + tagName + " edited")
+            .set_description("`" + joinVector(manager.data[tagName], ' ') + "`")
             .add_field("Expected output", command_tag_format(args, event, tags));
         return dpp::message(event.msg.channel_id, embed_);
     };
     if (action == "info") {
         if (tagName.empty()) return dpp::message("Please specify a tag.");
-        if (!tags_.contains(tagName)) return dpp::message("Tag not found.");
+        if (!manager.data.contains(tagName)) return dpp::message("Tag not found.");
         dpp::embed embed_ = embed
             .set_title("Tag " + tagName)
-            .set_description("`" + joinVector(tags_[tagName], ' ') + "`")
-            .add_field("Expected output", command_tag_format(tags_[tagName], event, tags));
+            .set_description("`" + joinVector(manager.data[tagName], ' ') + "`")
+            .add_field("Expected output", command_tag_format(manager.data[tagName], event, tags));
         return dpp::message(event.msg.channel_id, embed_);
     };
     if (action == "list") {
         dpp::embed embed_ = embed
         .set_title("Tag List")
             .set_description("List of all tags");
-        for (auto pair : tags_) {
+        for (auto pair : manager.data) {
             embed_.add_field(pair.first, joinVector(pair.second, ' ') + " / " + command_tag_format(pair.second, event, tags));
         };
         return dpp::message(event.msg.channel_id, embed_);
@@ -278,42 +332,29 @@ static dpp::message command_tag(dpp::message_create_t event, vector<string> args
 
     tagName = action;
     if (tagName.empty()) return dpp::message("Please specify a tag.");
-    if (!tags_.contains(tagName)) return dpp::message("Tag not found.");
-    return dpp::message(command_tag_format(tags_[tagName], event, tags));
+    if (!manager.data.contains(tagName)) return dpp::message("Tag not found.");
+    return dpp::message(command_tag_format(manager.data[tagName], event, tags));
 
     return dpp::message("An error occured.");
 }
 
-map<string, function<dpp::message(dpp::message_create_t, vector<string>, map<string, vector<string>>&)>> COMMANDS = {
+map<string, function<dpp::message(dpp::message_create_t, vector<string>, TagManager&)>> COMMANDS = {
     { "tag", command_tag }
 };
 
 
 int main() {
-    ifstream tokenFile("TOKEN");
-    const string TOKEN((istreambuf_iterator<char>(tokenFile)), istreambuf_iterator<char>());
-    cout << "---------- STARTING ----------" << endl;
+    const string TOKEN = readFile("TOKEN");
+    log("---------- STARTING ----------", GREEN);
     TagManager manager;
     manager.parse();
-    cout << manager.log() << endl;
+    log("Scanned tags:\n" + manager.log("  "), YELLOW);
 
     dpp::cluster bot(TOKEN, dpp::i_default_intents | dpp::i_message_content);
 
-    cout << "----- Client starting... -----" << endl;
+    log("----- Client starting... -----", GREEN);
 
     // bot.on_log(dpp::utility::cout_logger());
-
-    /*bot.on_slashcommand([](const dpp::slashcommand_t& interaction) {
-        if (interaction.command.get_command_name() == "ping") {
-            interaction.reply("Pong! and no");
-        }
-
-        if (interaction.command.get_command_name() == "tag") {
-            interaction.reply("no");
-            cout << interaction.from->creator << endl;
-            string content = get<string>(interaction.get_parameter("content"));
-        }
-    });*/
 
     bot.on_message_create([&bot, &manager](const dpp::message_create_t& event) {
         if (!event.msg.content.starts_with(PREFIX)) return;
@@ -328,30 +369,14 @@ int main() {
         if (!commandFunction) return;
         vector<string> args = splitString(event.msg.content, ' ');
         args.erase(args.begin());
-        dpp::message message = commandFunction(event, args, manager.data);
+        dpp::message message = commandFunction(event, args, manager);
 
         event.reply(message, false);
-        manager.writeTags();
     });
 
     bot.on_ready([&bot](const dpp::ready_t& event) {
-        /*if (dpp::run_once<struct register_bot_commands>()) {
-            vector<dpp::slashcommand> commands;
-            bot.global_command_create(dpp::slashcommand("ping", "Ping pong!", bot.me.id));
-
-            dpp::slashcommand commandTag = dpp::slashcommand("tag", "Creates a tag", bot.me.id);
-            commandTag.add_option(
-                dpp::command_option(dpp::co_string, "content", "Tag content", true)
-            );
-            bot.global_command_create(dpp::slashcommand("tag", "Creates a tag", bot.me.id));
-            
-            for (dpp::slashcommand command : commands) {
-                // bot.global_command_create(command);
-                cout << "  Command " << command.name << " created." << endl;
-            };
-        };*/
-        bot.set_presence(dpp::presence(dpp::presence_status::ps_idle, dpp::activity(dpp::activity_type::at_streaming, "name", "some C++", "https://twitch.tv/syren_off/")));
-        cout << "------- Client started. ------" << endl;
+        bot.set_presence(dpp::presence(dpp::presence_status::ps_idle, dpp::activity(dpp::activity_type::at_streaming, "some C++", "???", "https://twitch.tv/haruusyren/")));
+        log("------- Client started. ------", GREEN);
     });
 
     bot.start(dpp::st_wait);
